@@ -880,34 +880,116 @@ echo "   - MainApp.wasm (command, uses utilities via JS)"
 |--------|-------------------------------|----------------------------------|
 | **Setup Complexity** | Simple (just expose to `window`) | Complex (reactor model, WASI) |
 | **Performance** | Slower (JS serialization) | Fast (direct calls) |
-| **Type Safety** | Manual JSON serialization | C ABI types (limited) |
+| **Type Safety** | Manual JSON serialization | Byte-level serialization (flexible) |
 | **Tooling** | Good (standard JavaScriptKit) | Limited (experimental) |
 | **Swift Version** | Any | Swift 6.0+ required |
 | **Best For** | Most projects | Performance-critical libraries |
 
-### Limitations of Direct WASM Imports
+### Trade-offs and Workarounds for Direct WASM Imports
 
-1. **C ABI Only**: Functions must use C-compatible types (`Int32`, `UnsafePointer<CChar>`)
-2. **Manual Memory Management**: Caller must free returned strings
-3. **No Swift Generics**: Can't expose generic Swift types
-4. **Limited Types**: Can't pass Swift structs/classes directly
-5. **Reactor Model Required**: Library modules must use reactor execution model
-6. **Experimental**: API may change, limited documentation
+#### Direct Type Constraints (But Solvable)
 
-### When to Stick with JavaScript Bridge
+1. **C ABI Transport Types**: Exported functions use C-compatible types (`Int32`, `UnsafePointer<CChar>`)
+   - **Not a Hard Limitation**: You can pass *any* Swift type using byte-level serialization
+   - **Workaround**: Serialize Swift structs to bytes, pass as `UnsafePointer<UInt8>`, deserialize on other side
+   - **Example**: Just like Python's `struct.pack()` / `struct.unpack()` - control the memory layout
 
-For most projects, **JavaScript bridge (Approach 2)** is recommended because:
+2. **Manual Memory Management**: Caller must free returned pointers
+   - Use `strdup()` for strings, `malloc()` for byte buffers
+   - Caller responsible for calling `free()` on returned pointers
+   - Standard pattern in C interop (not unique to WASM)
+
+3. **Byte-Level Serialization for Complex Types**
+   - Swift structs → bytes → WASM boundary → bytes → Swift structs
+   - Both sides must agree on memory layout and byte order
+   - Use `withUnsafeBytes` / `withUnsafeMutableBytes` for zero-copy serialization
+   - Works for any fixed-layout type (structs, enums with raw values)
+
+4. **Reactor Model Required**: Library modules must use `-mexec-model=reactor`
+   - Not a limitation, just a different execution model
+   - Reactor = library (exports functions), Command = executable (has `main`)
+
+5. **Experimental Status**: API may change, limited documentation
+   - *Note*: SwiftWasm itself is experimental, so this is par for the course
+   - `@_expose(wasm)` is stable enough for production if you control both sides
+
+### Practical Example: Passing Swift Structs via Bytes
+
+```swift
+// UtilitiesLib: Export function that takes/returns Swift struct as bytes
+struct Point {
+    var x: Double
+    var y: Double
+}
+
+@_expose(wasm, "processPoint")
+@_cdecl("processPoint")
+func processPoint(_ inputBytes: UnsafePointer<UInt8>, _ length: Int32) -> UnsafePointer<UInt8> {
+    // Deserialize bytes → Swift struct
+    let buffer = UnsafeBufferPointer(start: inputBytes, count: Int(length))
+    let point = buffer.withUnsafeBytes { $0.load(as: Point.self) }
+    
+    // Process in Swift
+    let processed = Point(x: point.x * 2, y: point.y * 2)
+    
+    // Serialize Swift struct → bytes
+    let resultPtr = UnsafeMutablePointer<UInt8>.allocate(capacity: MemoryLayout<Point>.size)
+    resultPtr.withMemoryRebound(to: Point.self, capacity: 1) { $0.pointee = processed }
+    return UnsafePointer(resultPtr)
+}
+
+@_expose(wasm, "freeBytes")
+@_cdecl("freeBytes")
+func freeBytes(_ ptr: UnsafePointer<UInt8>) {
+    ptr.deallocate()
+}
+```
+
+```swift
+// MainApp: Call exported function with Swift struct
+struct Point {
+    var x: Double
+    var y: Double
+}
+
+func useUtilities() {
+    let point = Point(x: 10.0, y: 20.0)
+    
+    // Serialize Swift struct → bytes
+    let inputBytes = withUnsafeBytes(of: point) { bytes in
+        Array(bytes)
+    }
+    
+    // Call WASM function (via JavaScript)
+    let resultPtr = utilitiesModule.processPoint(inputBytes, Int32(inputBytes.count))
+    
+    // Deserialize bytes → Swift struct
+    let processedPoint = resultPtr.withMemoryRebound(to: Point.self, capacity: 1) { $0.pointee }
+    print("Processed: (\(processedPoint.x), \(processedPoint.y))")
+    
+    // Free memory
+    utilitiesModule.freeBytes(resultPtr)
+}
+```
+
+**Key Insight**: The "C ABI limitation" is really about *ergonomics*, not capability. If you control both the exporting and importing sides, you can pass any Swift type by serializing to bytes. This is standard practice in network protocols, file formats, and cross-language interop (Python's `struct`, Rust's `bytemuck`, etc.).
+
+### When to Use JavaScript Bridge vs Direct WASM Imports
+
+**JavaScript Bridge (Approach 2)** - Best for most projects:
 - ✅ Easier to implement and debug
 - ✅ Better tooling support (JavaScriptKit)
-- ✅ Full Swift type support via JSON serialization
-- ✅ More flexible (any Swift types)
+- ✅ Automatic JSON serialization (less manual work)
+- ✅ More flexible for rapid prototyping
 - ✅ Mature and well-documented
 
-Use direct WASM imports (Approach 3) only when:
-- You need maximum performance
-- Building reusable WASM libraries
-- Comfortable with experimental features
-- Can work within C ABI constraints
+**Direct WASM Imports (Approach 3)** - Best for performance-critical code:
+- ✅ Maximum performance (no JS intermediation)
+- ✅ Lower memory overhead (no JSON parsing)
+- ✅ Building reusable WASM libraries for non-JS environments
+- ✅ Full control over memory layout and serialization
+- ⚠️ Requires comfort with byte-level programming
+- ⚠️ More manual work (serialization, memory management)
 
 ---
 
@@ -929,11 +1011,11 @@ This guide covers **three approaches** for working with multiple Swift packages 
 - Use when file size or loading strategy demands it
 - Trade complexity for flexibility
 
-**Approach 3: Direct WASM Imports with `@_expose(wasm)`** (Experimental)
+**Approach 3: Direct WASM Imports with `@_expose(wasm)`**
 - Direct Swift function calls between WASM modules
 - Best performance, no JavaScript intermediation
-- Requires Swift 6.0+, reactor model, C ABI constraints
-- Use for performance-critical shared libraries
+- Requires Swift 6.0+, reactor model, byte-level serialization for complex types
+- Use for performance-critical shared libraries or non-browser WASM environments
 
 ### Recommendation
 

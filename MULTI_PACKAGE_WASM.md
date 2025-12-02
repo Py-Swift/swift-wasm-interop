@@ -880,43 +880,46 @@ echo "   - MainApp.wasm (command, uses utilities via JS)"
 |--------|-------------------------------|----------------------------------|
 | **Setup Complexity** | Simple (just expose to `window`) | Complex (reactor model, WASI) |
 | **Performance** | Slower (JS serialization) | Fast (direct calls) |
-| **Type Safety** | Manual JSON serialization | Byte-level serialization (flexible) |
+| **Type Safety** | Manual JSON serialization | Zero-copy pointer casting |
 | **Tooling** | Good (standard JavaScriptKit) | Limited (experimental) |
 | **Swift Version** | Any | Swift 6.0+ required |
 | **Best For** | Most projects | Performance-critical libraries |
 
-### Trade-offs and Workarounds for Direct WASM Imports
+### Direct WASM Imports: What You Actually Need to Know
 
-#### Direct Type Constraints (But Solvable)
+#### Type Passing is Trivial (If You Know Memory Layout)
 
-1. **C ABI Transport Types**: Exported functions use C-compatible types (`Int32`, `UnsafePointer<CChar>`)
-   - **Not a Hard Limitation**: You can pass *any* Swift type using byte-level serialization
-   - **Workaround**: Serialize Swift structs to bytes, pass as `UnsafePointer<UInt8>`, deserialize on other side
-   - **Example**: Just like Python's `struct.pack()` / `struct.unpack()` - control the memory layout
+**The "C ABI" constraint just means pointers + integers as function signatures.**  
+Passing complex Swift types is straightforward with `withMemoryRebound` and `Data.load`:
 
-2. **Manual Memory Management**: Caller must free returned pointers
-   - Use `strdup()` for strings, `malloc()` for byte buffers
-   - Caller responsible for calling `free()` on returned pointers
-   - Standard pattern in C interop (not unique to WASM)
+1. **No Serialization Needed**: Just reinterpret bytes with matching memory layout
+   - Export: `UnsafePointer<YourStruct>` cast to `UnsafePointer<UInt8>`
+   - Import: `UnsafePointer<UInt8>` rebound to `UnsafePointer<YourStruct>`
+   - Zero-copy, zero-overhead - just pointer casting
 
-3. **Byte-Level Serialization for Complex Types**
-   - Swift structs → bytes → WASM boundary → bytes → Swift structs
-   - Both sides must agree on memory layout and byte order
-   - Use `withUnsafeBytes` / `withUnsafeMutableBytes` for zero-copy serialization
-   - Works for any fixed-layout type (structs, enums with raw values)
+2. **Key Requirements**:
+   - Both sides use identical struct layout (field order, alignment, padding)
+   - Fixed-size types (no classes, no String/Array fields - use pointers to those)
+   - Natural alignment (Swift handles this automatically for most structs)
+   - Byte order agreement (usually not an issue within WASM)
 
-4. **Reactor Model Required**: Library modules must use `-mexec-model=reactor`
-   - Not a limitation, just a different execution model
-   - Reactor = library (exports functions), Command = executable (has `main`)
+3. **Manual Memory Management**: Standard C interop pattern
+   - Exporter allocates with `UnsafeMutablePointer.allocate()`
+   - Importer calls exported `free()` function when done
+   - Same as any FFI boundary
 
-5. **Experimental Status**: API may change, limited documentation
-   - *Note*: SwiftWasm itself is experimental, so this is par for the course
-   - `@_expose(wasm)` is stable enough for production if you control both sides
+4. **Reactor Model**: Library modules use `-mexec-model=reactor`
+   - Not a limitation, just explicit: "this exports functions" vs "this is an executable"
+   - Reactor = library, Command = main program
 
-### Practical Example: Passing Swift Structs via Bytes
+5. **Experimental Status**: `@_expose(wasm)` is in active use
+   - SwiftWasm itself is experimental, this fits the ecosystem
+   - Stable enough for production if you control both sides
+
+### Practical Example: Zero-Copy Struct Passing
 
 ```swift
-// UtilitiesLib: Export function that takes/returns Swift struct as bytes
+// UtilitiesLib: Export function that takes/returns Swift struct (no serialization)
 struct Point {
     var x: Double
     var y: Double
@@ -924,72 +927,105 @@ struct Point {
 
 @_expose(wasm, "processPoint")
 @_cdecl("processPoint")
-func processPoint(_ inputBytes: UnsafePointer<UInt8>, _ length: Int32) -> UnsafePointer<UInt8> {
-    // Deserialize bytes → Swift struct
-    let buffer = UnsafeBufferPointer(start: inputBytes, count: Int(length))
-    let point = buffer.withUnsafeBytes { $0.load(as: Point.self) }
+func processPoint(_ inputPtr: UnsafePointer<UInt8>, _ length: Int32) -> UnsafePointer<UInt8> {
+    // Zero-copy: reinterpret bytes as Point
+    let point = inputPtr.withMemoryRebound(to: Point.self, capacity: 1) { $0.pointee }
     
     // Process in Swift
     let processed = Point(x: point.x * 2, y: point.y * 2)
     
-    // Serialize Swift struct → bytes
-    let resultPtr = UnsafeMutablePointer<UInt8>.allocate(capacity: MemoryLayout<Point>.size)
-    resultPtr.withMemoryRebound(to: Point.self, capacity: 1) { $0.pointee = processed }
-    return UnsafePointer(resultPtr)
+    // Return as bytes (caller will reinterpret)
+    let resultPtr = UnsafeMutablePointer<Point>.allocate(capacity: 1)
+    resultPtr.pointee = processed
+    return UnsafeRawPointer(resultPtr).assumingMemoryBound(to: UInt8.self)
 }
 
-@_expose(wasm, "freeBytes")
-@_cdecl("freeBytes")
-func freeBytes(_ ptr: UnsafePointer<UInt8>) {
-    ptr.deallocate()
+@_expose(wasm, "freePoint")
+@_cdecl("freePoint")
+func freePoint(_ ptr: UnsafePointer<UInt8>) {
+    ptr.withMemoryRebound(to: Point.self, capacity: 1) { $0.deallocate() }
 }
 ```
 
 ```swift
-// MainApp: Call exported function with Swift struct
+// MainApp: Call exported function with Swift struct (no serialization)
 struct Point {
     var x: Double
     var y: Double
 }
 
 func useUtilities() {
-    let point = Point(x: 10.0, y: 20.0)
+    var point = Point(x: 10.0, y: 20.0)
     
-    // Serialize Swift struct → bytes
-    let inputBytes = withUnsafeBytes(of: point) { bytes in
-        Array(bytes)
+    // Zero-copy: pass pointer to struct as bytes
+    let inputPtr = withUnsafePointer(to: &point) { ptr in
+        UnsafeRawPointer(ptr).assumingMemoryBound(to: UInt8.self)
     }
     
     // Call WASM function (via JavaScript)
-    let resultPtr = utilitiesModule.processPoint(inputBytes, Int32(inputBytes.count))
+    let resultPtr = utilitiesModule.processPoint(inputPtr, Int32(MemoryLayout<Point>.size))
     
-    // Deserialize bytes → Swift struct
+    // Zero-copy: reinterpret bytes as Point
     let processedPoint = resultPtr.withMemoryRebound(to: Point.self, capacity: 1) { $0.pointee }
     print("Processed: (\(processedPoint.x), \(processedPoint.y))")
     
     // Free memory
-    utilitiesModule.freeBytes(resultPtr)
+    utilitiesModule.freePoint(resultPtr)
 }
 ```
 
-**Key Insight**: The "C ABI limitation" is really about *ergonomics*, not capability. If you control both the exporting and importing sides, you can pass any Swift type by serializing to bytes. This is standard practice in network protocols, file formats, and cross-language interop (Python's `struct`, Rust's `bytemuck`, etc.).
+**Key Insight**: There's no "serialization" happening here. Both sides agree on `Point`'s memory layout (two `Double` fields = 16 bytes), and we're just casting pointers. This is identical to how C/C++ FFI works. The only "overhead" is understanding alignment and memory layout - which you need for any systems programming anyway.
+
+### Advanced: Complex Types with Nested Pointers
+
+```swift
+// For types with dynamic fields (String, Array), use pointer indirection
+struct Message {
+    var timestamp: Double
+    var textPtr: UnsafePointer<CChar>  // Points to null-terminated C string
+    var dataPtr: UnsafePointer<UInt8>  // Points to byte buffer
+    var dataLength: Int32
+}
+
+// Exporter handles allocation
+@_expose(wasm, "createMessage")
+@_cdecl("createMessage")
+func createMessage(_ text: UnsafePointer<CChar>) -> UnsafePointer<UInt8> {
+    let msg = UnsafeMutablePointer<Message>.allocate(capacity: 1)
+    msg.pointee = Message(
+        timestamp: Date().timeIntervalSince1970,
+        textPtr: strdup(text),  // Allocate copy
+        dataPtr: UnsafePointer([1, 2, 3, 4]),
+        dataLength: 4
+    )
+    return UnsafeRawPointer(msg).assumingMemoryBound(to: UInt8.self)
+}
+
+// Importer reads nested data
+let msgPtr = utilitiesModule.createMessage("Hello")
+let msg = msgPtr.withMemoryRebound(to: Message.self, capacity: 1) { $0.pointee }
+let text = String(cString: msg.textPtr)
+let data = UnsafeBufferPointer(start: msg.dataPtr, count: Int(msg.dataLength))
+```
+
+**No serialization libraries needed.** Just well-designed structs with proper alignment. Same techniques used in kernel drivers, GPU programming, network stacks, etc.
 
 ### When to Use JavaScript Bridge vs Direct WASM Imports
 
-**JavaScript Bridge (Approach 2)** - Best for most projects:
+**JavaScript Bridge (Approach 2)** - Best for rapid development:
 - ✅ Easier to implement and debug
 - ✅ Better tooling support (JavaScriptKit)
-- ✅ Automatic JSON serialization (less manual work)
+- ✅ Automatic JSON serialization (no pointer management)
 - ✅ More flexible for rapid prototyping
 - ✅ Mature and well-documented
 
-**Direct WASM Imports (Approach 3)** - Best for performance-critical code:
-- ✅ Maximum performance (no JS intermediation)
-- ✅ Lower memory overhead (no JSON parsing)
+**Direct WASM Imports (Approach 3)** - Best for systems programmers:
+- ✅ Maximum performance (zero-copy, no JS intermediation)
+- ✅ Lower memory overhead (no JSON parsing/allocation)
 - ✅ Building reusable WASM libraries for non-JS environments
-- ✅ Full control over memory layout and serialization
-- ⚠️ Requires comfort with byte-level programming
-- ⚠️ More manual work (serialization, memory management)
+- ✅ Full control over memory layout (like C/C++ FFI)
+- ⚠️ Requires understanding of memory layout and alignment
+- ⚠️ Manual memory management (allocate/free discipline)
 
 ---
 
@@ -1012,10 +1048,10 @@ This guide covers **three approaches** for working with multiple Swift packages 
 - Trade complexity for flexibility
 
 **Approach 3: Direct WASM Imports with `@_expose(wasm)`**
-- Direct Swift function calls between WASM modules
+- Direct Swift function calls between WASM modules (zero-copy)
 - Best performance, no JavaScript intermediation
-- Requires Swift 6.0+, reactor model, byte-level serialization for complex types
-- Use for performance-critical shared libraries or non-browser WASM environments
+- Requires Swift 6.0+, reactor model, understanding of memory layout
+- Use for performance-critical shared libraries or non-browser WASM
 
 ### Recommendation
 

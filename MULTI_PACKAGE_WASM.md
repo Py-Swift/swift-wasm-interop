@@ -8,10 +8,11 @@ Guide for building and linking multiple Swift packages as WebAssembly modules.
 
 ## Overview
 
-Swift WASM supports two approaches for working with multiple packages:
+Swift WASM supports **three approaches** for working with multiple packages:
 
 1. **Package Dependencies** (Recommended): Use SPM dependencies, compile everything into one WASM binary
-2. **Separate WASM Modules**: Build multiple independent WASM files and coordinate them in JavaScript
+2. **Separate WASM Modules with JS Bridge**: Build multiple independent WASM files, coordinate via JavaScript
+3. **Direct WASM Imports** (Experimental): Use `@_expose(wasm)` for direct Swift-to-Swift calls between modules
 
 ## Approach 1: Package Dependencies (Recommended)
 
@@ -174,7 +175,9 @@ echo "✅ Built single WASM with all dependencies included"
 
 ### How It Works
 
-Build each package as an independent WASM module, then coordinate them via JavaScript.
+Build each package as an independent WASM module. You can coordinate them either:
+1. **Via JavaScript** (simpler, covered below)
+2. **Direct WASM imports** (advanced, using `@_expose(wasm)` - see [Approach 3](#approach-3-wasm-imports-experimental))
 
 **Advantages:**
 - ✅ Lazy loading (load modules on demand)
@@ -183,9 +186,9 @@ Build each package as an independent WASM module, then coordinate them via JavaS
 - ✅ Shared modules across multiple apps
 
 **Disadvantages:**
-- ❌ Complex JavaScript coordination layer
-- ❌ No direct Swift-to-Swift calls between modules
-- ❌ Manual serialization for data passing
+- ❌ Complex coordination (JavaScript or WASM imports)
+- ❌ No SPM-managed dependencies between modules
+- ❌ Manual serialization for data passing (if using JS bridge)
 - ❌ Multiple network requests
 - ❌ Increased complexity
 
@@ -668,22 +671,275 @@ python3 -m http.server 8000
 
 ---
 
+## Approach 3: WASM Imports (Experimental)
+
+### Direct Swift-to-Swift Calls Between WASM Modules
+
+Swift 6.0+ supports exporting functions from WASM modules using `@_expose(wasm)`, enabling direct Swift function calls between separate WASM binaries **without JavaScript intermediation**.
+
+> 📚 **Reference**: [SwiftWasm Book - Exporting Functions](https://book.swiftwasm.org/examples/exporting-function.html)
+
+**Advantages:**
+- ✅ Direct Swift-to-Swift calls (no JavaScript bridge)
+- ✅ Native performance (no serialization overhead)
+- ✅ Type safety at module boundaries
+- ✅ Independent module updates
+- ✅ Code splitting with lazy loading
+
+**Disadvantages:**
+- ❌ Experimental (Swift 6.0+ only)
+- ❌ Requires reactor execution model
+- ❌ Manual WASM module instantiation
+- ❌ More complex build process
+- ❌ Limited tooling support
+
+### When to Use
+
+- You need direct Swift calls between modules (no JS bridge)
+- Building modular WASM libraries for reuse
+- Performance-critical inter-module communication
+- Willing to handle experimental features
+
+### Example: Shared Utilities Library
+
+#### Module 1: Utilities Library (Exports Functions)
+
+```swift
+// UtilitiesLib/Sources/main.swift
+
+// Swift 6.0+: Export functions for other WASM modules
+@_expose(wasm, "processString")
+@_cdecl("processString")  // C ABI for WASM compatibility
+func processString(_ input: UnsafePointer<CChar>) -> UnsafePointer<CChar> {
+    let swiftString = String(cString: input)
+    let processed = "Processed: \(swiftString)"
+    return strdup(processed)  // Caller must free
+}
+
+@_expose(wasm, "calculate")
+@_cdecl("calculate")
+func calculate(_ a: Int32, _ b: Int32) -> Int32 {
+    return a * 2 + b
+}
+
+@_expose(wasm, "initialize")
+@_cdecl("_initialize")  // Required for reactor model
+func initialize() {
+    print("✅ Utilities library initialized")
+}
+```
+
+**Build Command:**
+```bash
+#!/bin/bash
+# Build utilities library as reactor (not command)
+
+swiftc \
+    -target wasm32-unknown-wasi \
+    -parse-as-library \
+    UtilitiesLib/Sources/main.swift \
+    -o utilities.wasm \
+    -Xclang-linker -mexec-model=reactor
+
+echo "✅ Utilities library built: utilities.wasm"
+```
+
+#### Module 2: Main Application (Imports Functions)
+
+```swift
+// MainApp/Sources/main.swift
+import JavaScriptKit
+
+@main
+struct MainApp {
+    static func main() {
+        // Access imported functions from utilities.wasm
+        loadUtilitiesModule()
+    }
+    
+    static func loadUtilitiesModule() {
+        let global = JSObject.global
+        
+        // JavaScript will instantiate utilities.wasm and expose functions
+        guard let utilities = global.utilitiesModule.object else {
+            print("❌ Utilities module not loaded")
+            return
+        }
+        
+        // Call exported functions from utilities.wasm
+        let result = utilities.calculate!(10, 5)
+        print("Calculate result: \(result.number ?? 0)")
+        
+        let processed = utilities.processString!("Hello")
+        print("Processed: \(processed.string ?? "")")
+    }
+}
+```
+
+#### JavaScript Coordination (Instantiates Both Modules)
+
+```javascript
+// main.js - Load and link WASM modules
+import { WASI } from "@bjorn3/browser_wasi_shim";
+
+async function loadUtilitiesModule() {
+    // Load utilities.wasm
+    const utilitiesResponse = await fetch('utilities.wasm');
+    const utilitiesBuffer = await utilitiesResponse.arrayBuffer();
+    
+    // Create WASI instance
+    const wasi = new WASI([], [], [
+        /* stdin/stdout/stderr setup */
+    ]);
+    
+    // Instantiate utilities module
+    const utilitiesModule = await WebAssembly.instantiate(utilitiesBuffer, {
+        wasi_snapshot_preview1: wasi.wasiImport,
+    });
+    
+    // Initialize (required for reactor model)
+    utilitiesModule.instance.exports._initialize();
+    
+    // Expose to global for MainApp to use
+    window.utilitiesModule = utilitiesModule.instance.exports;
+    
+    console.log('✅ Utilities module loaded');
+}
+
+async function loadMainApp() {
+    // Load utilities first
+    await loadUtilitiesModule();
+    
+    // Now load main app (which uses utilities)
+    const { init } = await import('./output/index.js');
+    await init();
+    
+    console.log('✅ Main app loaded');
+}
+
+// Start loading
+loadMainApp();
+```
+
+### Alternative: Direct WASM Module Imports (Advanced)
+
+For true module-to-module imports without JavaScript, use WebAssembly's import mechanism:
+
+```javascript
+// Link utilities module to main module during instantiation
+const mainModule = await WebAssembly.instantiate(mainBuffer, {
+    wasi_snapshot_preview1: wasi.wasiImport,
+    utilities: {
+        // Import utilities functions
+        calculate: utilitiesModule.instance.exports.calculate,
+        processString: utilitiesModule.instance.exports.processString,
+    }
+});
+```
+
+Then in Swift, declare imports:
+```swift
+// MainApp needs to declare these as external
+// (This is experimental and tooling support is limited)
+```
+
+### Build Script for Multi-Module with Exports
+
+```bash
+#!/bin/bash
+set -e
+
+echo "Building WASM modules with exports..."
+
+# Module 1: Utilities (reactor model, exports functions)
+swiftc \
+    -target wasm32-unknown-wasi \
+    -parse-as-library \
+    UtilitiesLib/Sources/main.swift \
+    -o utilities.wasm \
+    -Xclang-linker -mexec-model=reactor
+
+# Module 2: Main app (command model, imports from utilities)
+swift package -c release \
+    --swift-sdk swift-6.2.1-RELEASE_wasm \
+    js --use-cdn --product MainApp
+
+# Copy outputs
+mkdir -p output
+cp utilities.wasm output/
+cp -r .build/plugins/PackageToJS/outputs/Package/* output/
+
+echo "✅ Modules built:"
+echo "   - utilities.wasm (reactor, exports functions)"
+echo "   - MainApp.wasm (command, uses utilities via JS)"
+```
+
+### Comparison: JS Bridge vs Direct WASM Imports
+
+| Aspect | JavaScript Bridge (Approach 2) | Direct WASM Imports (Approach 3) |
+|--------|-------------------------------|----------------------------------|
+| **Setup Complexity** | Simple (just expose to `window`) | Complex (reactor model, WASI) |
+| **Performance** | Slower (JS serialization) | Fast (direct calls) |
+| **Type Safety** | Manual JSON serialization | C ABI types (limited) |
+| **Tooling** | Good (standard JavaScriptKit) | Limited (experimental) |
+| **Swift Version** | Any | Swift 6.0+ required |
+| **Best For** | Most projects | Performance-critical libraries |
+
+### Limitations of Direct WASM Imports
+
+1. **C ABI Only**: Functions must use C-compatible types (`Int32`, `UnsafePointer<CChar>`)
+2. **Manual Memory Management**: Caller must free returned strings
+3. **No Swift Generics**: Can't expose generic Swift types
+4. **Limited Types**: Can't pass Swift structs/classes directly
+5. **Reactor Model Required**: Library modules must use reactor execution model
+6. **Experimental**: API may change, limited documentation
+
+### When to Stick with JavaScript Bridge
+
+For most projects, **JavaScript bridge (Approach 2)** is recommended because:
+- ✅ Easier to implement and debug
+- ✅ Better tooling support (JavaScriptKit)
+- ✅ Full Swift type support via JSON serialization
+- ✅ More flexible (any Swift types)
+- ✅ Mature and well-documented
+
+Use direct WASM imports (Approach 3) only when:
+- You need maximum performance
+- Building reusable WASM libraries
+- Comfortable with experimental features
+- Can work within C ABI constraints
+
+---
+
 ## Summary
 
-**Use Single WASM (Approach 1) when:**
-- Building typical applications
-- Want simplest build/deploy process
-- Need direct Swift-to-Swift calls
-- File size is acceptable (~18MB compressed)
+### What We Achieve
 
-**Use Multiple WASM (Approach 2) when:**
-- Building very large applications (>50MB uncompressed)
-- Need true lazy loading of features
-- Have distinct, separable modules
-- Want independent module updates
-- Willing to manage JavaScript coordination layer
+This guide covers **three approaches** for working with multiple Swift packages in WASM:
 
-For most projects, **Approach 1 (Single WASM with SPM dependencies)** is the right choice.
+**Approach 1: Single WASM with SPM Dependencies** (Recommended)
+- Standard Swift workflow, simplest approach
+- All code compiled into one binary
+- Direct Swift-to-Swift calls with full type safety
+- Best for 95% of projects
+
+**Approach 2: Multiple WASM Modules with JavaScript Bridge**
+- Independent WASM files coordinated via JavaScript
+- Good for lazy loading and code splitting
+- Use when file size or loading strategy demands it
+- Trade complexity for flexibility
+
+**Approach 3: Direct WASM Imports with `@_expose(wasm)`** (Experimental)
+- Direct Swift function calls between WASM modules
+- Best performance, no JavaScript intermediation
+- Requires Swift 6.0+, reactor model, C ABI constraints
+- Use for performance-critical shared libraries
+
+### Recommendation
+
+- **Start with Approach 1** (Single WASM) - it's simple and works great
+- **Consider Approach 2** (JS Bridge) if you need lazy loading or have very large apps
+- **Try Approach 3** (WASM Imports) only if you need maximum performance and can handle experimental features
 
 ---
 

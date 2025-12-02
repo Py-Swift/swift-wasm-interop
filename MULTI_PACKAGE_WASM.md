@@ -918,6 +918,8 @@ Passing complex Swift types is straightforward with `withMemoryRebound` and `Dat
 
 ### Practical Example: Zero-Copy Struct Passing
 
+#### Classic Approach: UnsafePointer
+
 ```swift
 // UtilitiesLib: Export function that takes/returns Swift struct (no serialization)
 struct Point {
@@ -973,6 +975,61 @@ func useUtilities() {
     utilitiesModule.freePoint(resultPtr)
 }
 ```
+
+#### Modern Approach: Span (Swift 6.0+)
+
+**Swift 6.0 introduced `Span<T>` and `RawSpan`** - bounds-checked, safer alternatives to `UnsafePointer`:
+
+```swift
+// UtilitiesLib: Using Span for bounds safety
+@_expose(wasm, "processPointSpan")
+@_cdecl("processPointSpan")
+func processPointSpan(_ inputPtr: UnsafePointer<UInt8>, _ length: Int32) -> UnsafePointer<UInt8> {
+    // Create bounds-checked span from raw pointer
+    let rawSpan = RawSpan(start: inputPtr, count: Int(length))
+    
+    // Load Point from span (bounds-checked)
+    let point = rawSpan.load(as: Point.self)
+    
+    // Process in Swift
+    let processed = Point(x: point.x * 2, y: point.y * 2)
+    
+    // Return as bytes
+    let resultPtr = UnsafeMutablePointer<Point>.allocate(capacity: 1)
+    resultPtr.pointee = processed
+    return UnsafeRawPointer(resultPtr).assumingMemoryBound(to: UInt8.self)
+}
+```
+
+```swift
+// MainApp: Using Span for safer memory access
+func useUtilitiesWithSpan() {
+    var point = Point(x: 10.0, y: 20.0)
+    
+    // Create span from value
+    withUnsafeBytes(of: &point) { bytes in
+        let span = RawSpan(bytes)
+        
+        // Call WASM function
+        let resultPtr = utilitiesModule.processPointSpan(span.baseAddress!, Int32(span.count))
+        
+        // Load result with bounds checking
+        let resultSpan = RawSpan(start: resultPtr, count: MemoryLayout<Point>.size)
+        let processedPoint = resultSpan.load(as: Point.self)
+        print("Processed: (\(processedPoint.x), \(processedPoint.y))")
+        
+        // Free memory
+        utilitiesModule.freePoint(resultPtr)
+    }
+}
+```
+
+**Benefits of Span**:
+- ✅ **Bounds checking**: Runtime checks prevent out-of-bounds access
+- ✅ **Automatic lifetime tracking**: Compiler enforces memory safety
+- ✅ **Easier to reason about**: Count is always associated with pointer
+- ✅ **No manual capacity tracking**: `Span` knows its own size
+- ⚠️ **Slight overhead**: Bounds checks add minimal runtime cost (negligible)
 
 **Key Insight**: There's no "serialization" happening here. Both sides agree on `Point`'s memory layout (two `Double` fields = 16 bytes), and we're just casting pointers. This is identical to how C/C++ FFI works. The only "overhead" is understanding alignment and memory layout - which you need for any systems programming anyway.
 

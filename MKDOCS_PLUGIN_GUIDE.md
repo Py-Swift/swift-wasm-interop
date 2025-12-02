@@ -2,6 +2,10 @@
 
 Complete guide for creating an MkDocs plugin that integrates Swift WASM modules for interactive documentation.
 
+> 📚 **Prerequisites**: 
+> - Basic Swift WASM setup: [README.md](README.md) - Package configuration, build process, and deployment
+> - JavaScript interop patterns: [MONACO_WASM_INTEROP.md](MONACO_WASM_INTEROP.md) - Monaco Editor integration (if building editors)
+
 ## Overview
 
 This guide shows how to create an MkDocs plugin that:
@@ -369,6 +373,8 @@ fi
 echo "✅ Build complete - run 'mkdocs serve' to test"
 ```
 
+> 💡 **For more details on compression and client-side decompression**, see the [GitHub Pages Deployment](README.md#github-pages-deployment-challenges) section in README.md.
+
 ## Step 6: Development Workflow
 
 ```bash
@@ -389,6 +395,8 @@ mkdocs gh-deploy
 ## Advanced: Custom HTML Injection
 
 ### Example: Monaco Editor Integration
+
+> 📖 **Complete Monaco Integration Guide**: For detailed patterns on Monaco + Swift WASM interop, see [MONACO_WASM_INTEROP.md](MONACO_WASM_INTEROP.md)
 
 ```python
 def on_page_content(self, html, page, config, files):

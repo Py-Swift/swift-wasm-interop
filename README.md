@@ -44,6 +44,13 @@ Patterns for integrating Monaco Editor with Swift WASM:
 - Completion provider registration
 - Common pitfalls and debugging
 
+### 3. [MkDocs Plugin Integration](MKDOCS_PLUGIN_GUIDE.md)
+Create MkDocs plugins with Swift WASM modules:
+- Plugin lifecycle and hooks
+- WASM file management
+- Development server customization
+- HTML/JS injection patterns
+
 ## Why This Guide?
 
 Swift WASM binaries are typically **40-50MB**, which causes:
@@ -410,7 +417,9 @@ Example HTML loading WASM:
 
 ### Option A: MkDocs Plugin
 
-If using MkDocs, create a plugin to copy WASM files:
+If using MkDocs, create a plugin to copy WASM files.
+
+> 💡 **See Also**: For complete MkDocs plugin implementation guide, see [MKDOCS_PLUGIN_GUIDE.md](MKDOCS_PLUGIN_GUIDE.md)
 
 ```python
 # mkdocs_plugin/your_plugin.py

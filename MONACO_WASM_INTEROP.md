@@ -2,6 +2,8 @@
 
 This guide documents how to integrate Monaco Editor with Swift WASM using JavaScriptKit, including editor lifecycle management, JavaScript interop patterns, and completion provider registration.
 
+> 📚 **Prerequisites**: Familiarity with Swift WASM setup. See [README.md](README.md) for basic Swift WASM package configuration and build process.
+
 ## Architecture Overview
 
 ```
@@ -597,7 +599,8 @@ your-wasm-project/
 - **Monaco Editor API**: https://microsoft.github.io/monaco-editor/api/
 - **Monaco Languages API**: https://microsoft.github.io/monaco-editor/api/modules/monaco.languages.html
 - **SwiftWasm**: https://swiftwasm.org
-- **WASM Setup Guide**: See `WASM_SETUP_GUIDE.md` in this repository
+- **Swift WASM Setup Guide**: [README.md](README.md) - Complete Swift WASM package setup and deployment
+- **MkDocs Plugin Guide**: [MKDOCS_PLUGIN_GUIDE.md](MKDOCS_PLUGIN_GUIDE.md) - Integrate Swift WASM with MkDocs documentation
 
 ## Summary
 

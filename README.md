@@ -51,19 +51,6 @@ Create MkDocs plugins with Swift WASM modules:
 - Development server customization
 - HTML/JS injection patterns
 
-## Why This Guide?
-
-Swift WASM binaries are typically **40-50MB**, which causes:
-- ❌ Git LFS warnings on GitHub
-- ❌ Slow initial page loads
-- ❌ MIME type issues with compression
-
-This guide shows how to solve these problems with:
-- ✅ 60% file size reduction (gzip compression)
-- ✅ Client-side decompression (works on any static host)
-- ✅ Proper WASM loading with correct headers
-- ✅ No Git LFS required
-
 ---
 
 # Swift WASM Setup & Deployment
@@ -242,6 +229,19 @@ Your WASM module should load successfully with the ~40-50MB binary.
 ---
 
 ## GitHub Pages Deployment Challenges
+
+### Why Compression Matters
+
+Swift WASM binaries are typically **40-50MB**, which causes:
+- ❌ Git LFS warnings on GitHub
+- ❌ Slow initial page loads
+- ❌ MIME type issues with compression
+
+This section shows how to solve these problems with:
+- ✅ 60% file size reduction (gzip compression)
+- ✅ Client-side decompression (works on any static host)
+- ✅ Proper WASM loading with correct headers
+- ✅ No Git LFS required
 
 ### The Problem
 

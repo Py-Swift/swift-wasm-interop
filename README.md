@@ -129,6 +129,8 @@ swift package -c release --swift-sdk swift-6.2.1-RELEASE_wasm js --use-cdn --pro
 
 Create `build.sh` for automated building:
 
+> ⚠️ **Important**: Always use compression from the start! Only skip it for initial testing to verify the WASM module runs at all, then immediately switch to the compressed version. Most debugging issues occur with compression, and having an uncompressed fallback can mask problems that will break in production.
+
 ```bash
 #!/bin/bash
 set -e
@@ -148,8 +150,25 @@ echo "Copying build artifacts..."
 mkdir -p "$OUTPUT_DIR"
 cp -r "$BUILD_DIR"/* "$OUTPUT_DIR/"
 
+# Compress immediately - don't wait until deployment
+echo "Compressing with gzip..."
+if command -v gzip &> /dev/null; then
+    gzip -9 -f -k "$OUTPUT_DIR/YourPackage.wasm"
+    rm "$OUTPUT_DIR/YourPackage.wasm"  # Remove uncompressed
+    
+    # Patch index.js for client-side decompression
+    sed -i.bak 's|fetch(new URL("YourPackage.wasm", import.meta.url))|fetch(new URL("YourPackage.wasm.gz", import.meta.url)).then(async r => { const ds = new DecompressionStream("gzip"); return new Response(r.body.pipeThrough(ds), { headers: { "Content-Type": "application/wasm" } }); })|' "$OUTPUT_DIR/index.js"
+    rm "$OUTPUT_DIR/index.js.bak"
+fi
+
 echo "✅ Build complete!"
 ```
+
+**Why compress during build, not deployment:**
+- Most issues happen with compressed loading, not raw WASM
+- Catch decompression problems early in development
+- Avoid false positives (works locally with raw .wasm, fails in production with .wasm.gz)
+- Test the exact same setup you'll deploy
 
 ### Build Output
 
@@ -213,7 +232,7 @@ Basic HTML setup to load your WASM module:
 Test your WASM application locally before deploying:
 
 ```bash
-# Build
+# Build (includes compression)
 ./build.sh
 
 # Serve with Python
@@ -224,7 +243,18 @@ python3 -m http.server 8000
 # Open http://localhost:8000
 ```
 
-Your WASM module should load successfully with the ~40-50MB binary.
+**Testing with compression:**
+- Your build script already compresses the WASM and patches `index.js`
+- Local testing uses the same compressed `.wasm.gz` as production
+- This catches issues early (browser compatibility, decompression errors, MIME types)
+- If it works locally with compression, it will work on GitHub Pages
+
+**First-time setup only:**
+If you need to verify the WASM module runs at all (before adding compression):
+1. Skip the gzip/sed steps in build.sh temporarily
+2. Test with raw `.wasm` file
+3. Once confirmed working, **immediately** re-enable compression
+4. Never keep both `.wasm` and `.wasm.gz` - having a fallback masks production issues
 
 ---
 

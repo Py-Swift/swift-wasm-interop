@@ -51,6 +51,13 @@ Create MkDocs plugins with Swift WASM modules:
 - Development server customization
 - HTML/JS injection patterns
 
+### 4. [Multi-Package WASM](MULTI_PACKAGE_WASM.md)
+Building and linking multiple Swift packages as WASM:
+- Single WASM with SPM dependencies (recommended)
+- Multiple independent WASM modules (advanced)
+- Coordination strategies and trade-offs
+- When to use each approach
+
 ---
 
 # Swift WASM Setup & Deployment

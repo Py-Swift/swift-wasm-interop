@@ -1,32 +1,90 @@
-# Swift WASM Setup Guide for GitHub Pages
+# Swift WASM Interop Guide
 
-This guide documents the complete setup process for deploying Swift WASM packages with compression to GitHub Pages, avoiding Git LFS issues.
+Comprehensive guides for building and deploying Swift WebAssembly applications with JavaScript interop.
 
-## Problem Statement
+## Overview
 
-Swift WASM binaries are typically 40-50MB, which triggers GitHub's file size warnings and can cause LFS issues. GitHub Pages can't serve compressed files with proper headers server-side, so we need client-side decompression.
+This repository contains detailed guides for:
+- **Building Swift WASM packages** with JavaScriptKit
+- **Deploying to static hosts** (GitHub Pages, Netlify, etc.)
+- **Integrating with JavaScript libraries** (Monaco Editor, etc.)
+- **Solving common WASM deployment challenges** (compression, headers, loading)
 
-## Solution Architecture
+## Quick Start
 
-1. **Build**: Compile Swift to WASM using SwiftWasm toolchain via SPM
-2. **Bundle**: Use JavaScriptKit's `js` package plugin (integrated with SPM)
-3. **Compress**: Use gzip to reduce file size by ~60% (46MB → 18MB)
-4. **Deploy**: Only deploy `.wasm.gz` file (no uncompressed version)
-5. **Load**: Client-side JavaScript decompresses using browser's native `DecompressionStream` API
+```bash
+# Install Swift with WASM support
+curl -L https://swift.org/install/swiftly | bash
+swiftly install swift-6.2.1-RELEASE
 
-**Note**: We use JavaScriptKit's `js` subcommand (e.g., `swift package js`), which is a package plugin. This is **NOT** the standalone `carton` CLI tool. The plugin is automatically available when you include the JavaScriptKit package dependency.
+# Install WASM SDK
+swiftly install swift-6.2.1-RELEASE_wasm
 
-## Prerequisites
+# Create Swift package with JavaScriptKit
+swift package init --type executable
+# Add JavaScriptKit dependency to Package.swift
 
-- Swift 6.2.1+ (earlier versions don't support WASM properly - install via `swiftly` toolchain manager)
-- SwiftWasm SDK installed (e.g., `swift-6.2.1-RELEASE_wasm` or newer)
-- JavaScriptKit package (provides the `js` package plugin for bundling)
-- Python 3.x with `mkdocs` (if using MkDocs for docs)
-- `gzip` (built-in on macOS/Linux)
+# Build for WASM
+swift package -c release --swift-sdk swift-6.2.1-RELEASE_wasm js --use-cdn --product YourPackage
+```
 
-## Step 1: Swift Package Configuration
+## Guides
 
-### Package.swift
+### 1. [Swift WASM Setup & Deployment](https://github.com/Py-Swift/swift-wasm-interop/blob/master/README.md#swift-wasm-setup--deployment)
+Complete walkthrough from package setup to deployment, including:
+- Swift Package configuration
+- Build process with JavaScriptKit's `js` plugin
+- Compression strategies for large binaries
+- GitHub Pages deployment challenges and solutions
+
+### 2. [Monaco Editor Integration](MONACO_WASM_INTEROP.md)
+Patterns for integrating Monaco Editor with Swift WASM:
+- Critical loading sequence
+- JavaScriptKit interop patterns (JSObject, JSValue, JSClosure)
+- Completion provider registration
+- Common pitfalls and debugging
+
+## Why This Guide?
+
+Swift WASM binaries are typically **40-50MB**, which causes:
+- ❌ Git LFS warnings on GitHub
+- ❌ Slow initial page loads
+- ❌ MIME type issues with compression
+
+This guide shows how to solve these problems with:
+- ✅ 60% file size reduction (gzip compression)
+- ✅ Client-side decompression (works on any static host)
+- ✅ Proper WASM loading with correct headers
+- ✅ No Git LFS required
+
+---
+
+# Swift WASM Setup & Deployment
+
+Complete guide for building and deploying Swift WebAssembly applications.
+
+## Table of Contents
+1. [Package Configuration](#package-configuration)
+2. [Build Process](#build-process)
+3. [HTML Integration](#html-integration)
+4. [Local Testing](#local-testing)
+5. [GitHub Pages Deployment](#github-pages-deployment-challenges)
+6. [Common Issues](#common-issues--solutions)
+
+---
+
+## Package Configuration
+
+### Prerequisites
+
+- **Swift 6.2.1+** (earlier versions don't support WASM properly)
+  - Install via `swiftly` toolchain manager: https://swift.org/install/swiftly
+- **SwiftWasm SDK**: `swift-6.2.1-RELEASE_wasm` or newer
+- **JavaScriptKit**: Provides the `js` package plugin for bundling (NOT standalone carton CLI)
+- **gzip**: Built-in on macOS/Linux for compression
+- Optional: **Python 3.x + mkdocs** (if using MkDocs for documentation)
+
+### Package.swift Setup
 
 ```swift
 // swift-tools-version: 6.0
@@ -62,9 +120,20 @@ let package = Package(
 - Disable availability checking for WASM target
 - JavaScriptKit package includes the plugin that adds `swift package js` subcommand
 
-## Step 2: Build Script
+---
 
-Create `build.sh`:
+## Build Process
+
+### Basic Build Command
+
+```bash
+# Using swiftly-managed Swift with WASM SDK
+swift package -c release --swift-sdk swift-6.2.1-RELEASE_wasm js --use-cdn --product YourPackage
+```
+
+### Build Script (Recommended)
+
+Create `build.sh` for automated building:
 
 ```bash
 #!/bin/bash
@@ -76,29 +145,152 @@ OUTPUT_DIR="output"  # Change this to match your project structure
 BUILD_DIR=".build/plugins/PackageToJS/outputs/Package"
 
 echo "Building for WASM..."
-echo "Using Swift with WASM SDK..."
 $SWIFT_BIN --version
 
 # Build using JavaScriptKit's 'js' subcommand (package plugin)
-# This is the modern way - no separate carton CLI needed
 $SWIFT_BIN package -c release --swift-sdk swift-6.2.1-RELEASE_wasm js --use-cdn --product YourPackage
 
 echo "Copying build artifacts..."
 mkdir -p "$OUTPUT_DIR"
 cp -r "$BUILD_DIR"/* "$OUTPUT_DIR/"
 
+echo "✅ Build complete!"
+```
+
+### Build Output
+
+After building, you'll have:
+```
+output/
+├── index.js               # WASM loader
+├── index.d.ts             # TypeScript definitions
+├── instantiate.js         # Instantiation logic
+├── runtime.js             # JavaScriptKit runtime
+├── YourPackage.wasm       # Your compiled WASM binary (~40-50MB)
+└── platforms/
+    └── browser.js         # Browser-specific code
+```
+
+### Understanding the Build
+
+- **`swift package js`**: JavaScriptKit's package plugin (NOT standalone carton CLI)
+- **`-c release`**: Release build (optimized, smaller binary)
+- **`--swift-sdk`**: Specifies WASM target SDK
+- **`--use-cdn`**: Uses CDN for JavaScriptKit runtime (smaller bundle)
+- **Output location**: `.build/plugins/PackageToJS/outputs/Package/`
+
+---
+
+## HTML Integration
+
+Basic HTML setup to load your WASM module:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>My Swift WASM App</title>
+</head>
+<body>
+    <div id="status">Loading...</div>
+    
+    <script type="module">
+        try {
+            const { init } = await import('./output/index.js');
+            const wasm = await init();
+            
+            document.getElementById('status').textContent = '✅ WASM Loaded!';
+            
+            // Your WASM is now ready - interact with Swift exports
+        } catch (error) {
+            console.error('Failed to load WASM:', error);
+            document.getElementById('status').textContent = '❌ Error: ' + error.message;
+        }
+    </script>
+</body>
+</html>
+```
+
+---
+
+## Local Testing
+
+Test your WASM application locally before deploying:
+
+```bash
+# Build
+./build.sh
+
+# Serve with Python
+cd output
+python3 -m http.server 8000
+
+# Or use any static server
+# Open http://localhost:8000
+```
+
+Your WASM module should load successfully with the ~40-50MB binary.
+
+---
+
+## GitHub Pages Deployment Challenges
+
+### The Problem
+
+When deploying Swift WASM to GitHub Pages, you encounter several issues:
+
+1. **File Size**: WASM binaries are 40-50MB
+   - Triggers Git LFS warnings
+   - Slow initial page loads
+   - May hit GitHub file size limits
+
+2. **MIME Type Headers**: WASM needs `Content-Type: application/wasm`
+   - GitHub Pages is a static file server (no custom headers)
+   - Compression serves files as `application/gzip`, not `application/wasm`
+   - `WebAssembly.instantiateStreaming()` fails without proper MIME type
+
+3. **Server-Side Compression**: Can't configure GitHub Pages server
+   - No .htaccess or nginx config
+   - No custom header injection
+   - No server-side decompression logic
+
+### The Solution: Client-Side Decompression
+
+Instead of fighting GitHub Pages limitations, we:
+1. **Compress** the WASM binary with gzip (60% reduction: 46MB → 18MB)
+2. **Remove** the uncompressed `.wasm` file (avoid Git LFS)
+3. **Patch** `index.js` to decompress client-side using browser's `DecompressionStream` API
+4. **Add** proper `Content-Type: application/wasm` header in JavaScript
+
+### Updated Build Script with Compression
+
+```bash
+#!/bin/bash
+set -e
+
+SWIFT_BIN="${HOME}/.swiftly/bin/swift"
+OUTPUT_DIR="output"
+BUILD_DIR=".build/plugins/PackageToJS/outputs/Package"
+
+echo "Building for WASM..."
+$SWIFT_BIN package -c release --swift-sdk swift-6.2.1-RELEASE_wasm js --use-cdn --product YourPackage
+
+mkdir -p "$OUTPUT_DIR"
+cp -r "$BUILD_DIR"/* "$OUTPUT_DIR/"
+
+# GitHub Pages optimization: Compress + patch for client-side decompression
 echo "Compressing with gzip..."
 if command -v gzip &> /dev/null; then
     original_size=$(stat -f%z "$OUTPUT_DIR/YourPackage.wasm")
     
-    # Compress with max compression, keep original temporarily
+    # Compress with max compression
     gzip -9 -f -k "$OUTPUT_DIR/YourPackage.wasm"
     
-    # Remove uncompressed to avoid LFS
+    # IMPORTANT: Remove uncompressed to avoid Git LFS
     rm "$OUTPUT_DIR/YourPackage.wasm"
     
-    # Patch index.js to load .wasm.gz with decompression
-    echo "Patching index.js..."
+    # Patch index.js for client-side decompression
     sed -i.bak 's|fetch(new URL("YourPackage.wasm", import.meta.url))|fetch(new URL("YourPackage.wasm.gz", import.meta.url)).then(async r => { const ds = new DecompressionStream("gzip"); return new Response(r.body.pipeThrough(ds), { headers: { "Content-Type": "application/wasm" } }); })|' "$OUTPUT_DIR/index.js"
     rm "$OUTPUT_DIR/index.js.bak"
     
@@ -108,45 +300,64 @@ if command -v gzip &> /dev/null; then
     echo "   Original:   $(($original_size / 1024 / 1024))MB"
     echo "   Compressed: $(($compressed_size / 1024 / 1024))MB"
     echo "   Saved:      ${compression_ratio}%"
-else
-    echo "⚠️  gzip not found"
 fi
 
-echo "✅ Build complete!"
+echo "✅ Build complete - ready for GitHub Pages!"
 ```
 
-### Critical Steps Explained:
+### What This Does
 
-1. **Absolute Swift Path**: `${HOME}/.swiftly/bin/swift`
-   - Avoids issues with Python venv or other PATH modifications
-   - Ensures correct Swift version with WASM support
+1. **Compresses** the WASM binary: `gzip -9` achieves ~60% reduction (46MB → 18MB)
+2. **Removes** uncompressed `.wasm`: Avoids Git LFS triggers (files >50MB)
+3. **Patches** `index.js`: Adds client-side decompression code
 
-2. **JavaScriptKit Plugin Command**: `swift package js`
-   - **NOT** `carton bundle` - we use JavaScriptKit's own package plugin
-   - `-c release`: Release build (optimized)
-   - `--swift-sdk wasm-6.0.0-RELEASE`: Specifies WASM SDK version
-   - `js`: JavaScriptKit's subcommand (provided by package plugin)
-   - `--use-cdn`: Uses CDN for JavaScriptKit runtime
-   - `--product YourPackage`: Specifies which product to build
-   - Outputs to `.build/plugins/PackageToJS/outputs/Package/`
+### The Patched index.js
 
-3. **Remove Uncompressed**: `rm "$OUTPUT_DIR/YourPackage.wasm"`
-   - Essential to avoid Git LFS triggers (files >50MB)
-   - Only `.wasm.gz` should be committed to repository
+The sed command injects this decompression logic:
+### The Patched index.js
 
-4. **Patch index.js**: Inline sed replacement
-   - Adds client-side decompression using `DecompressionStream`
-   - Must include `Content-Type: application/wasm` header for WebAssembly.instantiateStreaming()
-   - Uses browser's native API (no external dependencies)
+The sed command injects this decompression logic:
 
-### Critical Steps:
-1. **Use absolute Swift path** - Avoid Python venv pollution of PATH
-2. **Remove uncompressed .wasm** - Essential to avoid LFS triggers
-3. **Patch index.js** - Add client-side decompression with proper MIME type
+```javascript
+// Original: fetch(new URL("YourPackage.wasm", import.meta.url))
+// Becomes:
+fetch(new URL("YourPackage.wasm.gz", import.meta.url))
+    .then(async r => { 
+        const ds = new DecompressionStream("gzip"); 
+        return new Response(r.body.pipeThrough(ds), { 
+            headers: { "Content-Type": "application/wasm" } 
+        }); 
+    })
+```
 
-## Step 3: Client-Side Decompression
+**Why This Works:**
+- ✅ Fetches `.wasm.gz` instead of `.wasm`
+- ✅ Uses browser's native `DecompressionStream` API (Chrome 80+, Firefox 102+, Safari 16.4+)
+- ✅ Adds proper `Content-Type: application/wasm` header for `WebAssembly.instantiateStreaming()`
+- ✅ Works on **any** static host (GitHub Pages, Netlify, Vercel, etc.)
+- ✅ No server configuration needed
 
-The patched `index.js` will contain:
+### Why Client-Side Decompression?
+
+**Server-side approach** (doesn't work on GitHub Pages):
+```apache
+# Needs server config - NOT possible on GitHub Pages
+<FilesMatch "\.wasm\.gz$">
+    Header set Content-Type "application/wasm"
+    Header set Content-Encoding "gzip"
+</FilesMatch>
+```
+
+**Client-side approach** (works everywhere):
+- Browser fetches compressed `.wasm.gz` (18MB instead of 46MB)
+- JavaScript decompresses in memory (~0.5-1s)
+- Proper MIME type added in Response wrapper
+- Total time: Still faster than downloading 46MB uncompressed
+
+### Deployment
+
+```bash
+# Option 1: MkDocs (if using docs)
 
 ```javascript
 module = fetch(new URL("YourPackage.wasm.gz", import.meta.url))
